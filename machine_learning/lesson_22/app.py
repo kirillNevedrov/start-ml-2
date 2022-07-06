@@ -1,11 +1,25 @@
+import os
 from datetime import datetime
 from typing import List
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import NoResultFound
+from catboost import CatBoostClassifier
+# from schema import PostGet
+import pandas as pd
 
-from schema import PostGet
+#
+from pydantic import BaseModel
+
+class PostGet(BaseModel):
+    id: int
+    text: str
+    topic: str
+
+    class Config:
+        orm_mode = True
+# 
 
 #
 from sqlalchemy import create_engine
@@ -31,38 +45,76 @@ class Post(Base):
     topic = Column(String)
 #
 
-app = FastAPI()
-
 def get_db():
     with SessionLocal() as db:
         yield db
 
 
-# @app.get("/user/{id}", response_model=UserGet)
-# def get_user(id: int, db: Session = Depends(get_db)):
-#     try:
-#         return db.query(User).filter(User.id == id).one()
-#     except NoResultFound:
-#         raise HTTPException(404, detail="User not found")
+def get_model_path(path: str) -> str:
+    if os.environ.get("IS_LMS") == "1":  # проверяем где выполняется код в лмс, или локально. Немного магии
+        MODEL_PATH = '/workdir/user_input/model'
+    else:
+        MODEL_PATH = path
+    return MODEL_PATH
 
-# @app.get("/post/{id}", response_model=PostGet)
-# def get_post(id: int, db: Session = Depends(get_db)):
-#     try:
-#         return db.query(Post).filter(Post.id == id).one()
-#     except NoResultFound:
-#         raise HTTPException(404, detail="Post not found")
 
-# @app.get("/user/{id}/feed", response_model=List[FeedGet])
-# def get_user_feed(id: int, limit: int = 10, db: Session = Depends(get_db)):
-#     return db.query(Feed).filter(Feed.user_id == id).order_by(Feed.time.desc()).limit(limit).all()
+def load_features(user_data, post_text_df, user_id:int,time:datetime):
+    # user_data = pd.read_sql(
+    #     f"SELECT * FROM user_data WHERE user_id = {user_id}",     
+    #     SQLALCHEMY_DATABASE_URL                                 
+    # )
 
-# @app.get("/post/{id}/feed", response_model=List[FeedGet])
-# def get_post_feed(id: int, limit: int = 10, db: Session = Depends(get_db)):
-#     return db.query(Feed).filter(Feed.post_id == id).order_by(Feed.time.desc()).limit(limit).all()
+    # post_text_df = pd.read_sql(
+    #     "SELECT * FROM post_text_df",     
+    #     SQLALCHEMY_DATABASE_URL                                 
+    # )
+
+    post_text_df["user_id"] = user_id
+
+    merged_data = pd.merge(user_data[user_data['user_id'] == user_id], post_text_df, how='outer', on='user_id')
+
+    data = merged_data.dropna()
+
+    data['user_id'] = data['user_id'].astype(str)
+    data['gender'] = data['gender'].astype(str)
+    data['age'] = data['age'].astype(str)
+    data['exp_group'] = data['exp_group'].astype(str)
+    data['post_id'] = data['post_id'].astype(str)
+    data['timestamp'] = time.isoformat()
+
+    return data
+    
+
+
+
+def load_models():
+    model_path = get_model_path("C:\Git\start-ml-2\machine_learning\lesson_22\catboost_model.cbm")
+    model = CatBoostClassifier()
+    model.load_model(model_path)
+    return model
+
+app = FastAPI()
+
+
+model = load_models()
+
+user_data_orig = pd.read_sql(
+         f"SELECT * FROM user_data",     
+        SQLALCHEMY_DATABASE_URL                                 
+    )
+
+post_text_df_orig = pd.read_sql(
+    "SELECT * FROM post_text_df",     
+    SQLALCHEMY_DATABASE_URL                                 
+)
 
 @app.get("/post/recommendations/", response_model=List[PostGet])
 def get_post_recommendations(id: int, time: datetime, limit: int = 10, db: Session = Depends(get_db)):
-    return db.query(Post).limit(limit).all()
+    features = load_features(user_data=user_data_orig,post_text_df=post_text_df_orig, user_id=id,time=time
+    )
+    features['predict_proba'] = model.predict_proba(features)[:, 1]
+    return features.sort_values(by=["predict_proba"], ascending=False).head(limit)[['post_id','text', 'topic']].rename(columns={"post_id": "id"}).to_dict('records')
+    # return db.query(Post).limit(limit).all()
     # return db.query(Post) \
     #     .join(Feed, Feed.post_id == Post.id) \
     #     .filter(Feed.action == 'like') \

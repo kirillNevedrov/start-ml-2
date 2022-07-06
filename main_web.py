@@ -1,0 +1,1 @@
+from machine_learning.lesson_22.app import app

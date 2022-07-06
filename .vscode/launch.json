@@ -11,6 +11,19 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": true
-        }
+        },
+        {
+            "name": "Uvicorn: Debug",
+            "type": "python",
+            "request": "launch",
+            "justMyCode": false,
+            "module": "uvicorn",
+            "args": [
+              "main_web:app",
+              "--reload",
+              "--port",
+              "8899"
+            ]
+          },
     ]
 }
